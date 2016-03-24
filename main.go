@@ -19,7 +19,7 @@ type message struct {
 }
 
 type messagesMeta struct {
-	sync.Mutex
+	sync.RWMutex
 	semaphore chan struct{} // This limits number of concurrent go routines
 	message   chan *message // This is the successful user / pass combo
 	donechan  chan struct{} // Signals that an password attempt has completed
@@ -133,7 +133,6 @@ func (mm *messagesMeta) checkPass(user, pass string) {
 		fmt.Printf("Error returned from client.Do(): %s, carrying on\n", err.Error())
 		return
 	}
-	defer resp.Body.Close()
 
 	if resp.StatusCode < 400 {
 		// Success!
@@ -143,12 +142,13 @@ func (mm *messagesMeta) checkPass(user, pass string) {
 		}
 		mm.message <- m
 	}
+	resp.Body.Close()
 
 }
 
 func (mm *messagesMeta) isStopping() bool {
-	mm.Lock()
-	defer mm.Unlock()
+	mm.RLock()
+	defer mm.RUnlock()
 	return mm.stopping
 }
 

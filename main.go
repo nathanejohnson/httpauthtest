@@ -20,16 +20,15 @@ type message struct {
 
 type messagesMeta struct {
 	sync.Mutex
-	stopchan  chan struct{}
-	semaphore chan struct{}
-	message   chan *message
-	donechan  chan struct{}
-	url       string
-	client    *http.Client
-	stopping  bool
-	password  string
-	user      string
-	startTime time.Time
+	semaphore chan struct{} // This limits number of concurrent go routines
+	message   chan *message // This is the successful user / pass combo
+	donechan  chan struct{} // Signals that an password attempt has completed
+	url       string        // request url, with host ane port etc
+	client    *http.Client  // http client
+	stopping  bool          // whether we're stopping - not thread safe
+	password  string        // successful password
+	user      string        // successful user
+	startTime time.Time     // start time
 }
 
 func main() {
@@ -58,9 +57,11 @@ func main() {
 	}
 }
 
+// initializes a messagesMeta struct
+// maxroutines is the max number of concurrent requests.
+// url is the path to the server
 func messagesMetaInit(maxroutines int, url string) *messagesMeta {
 	mm := &messagesMeta{
-		stopchan:  make(chan struct{}),
 		semaphore: make(chan struct{}, maxroutines),
 		message:   make(chan *message),
 		donechan:  make(chan struct{}),
@@ -76,6 +77,8 @@ func messagesMetaInit(maxroutines int, url string) *messagesMeta {
 	return mm
 }
 
+// This is a book keeping / gate keeping routine
+// outputs status.
 func (mm *messagesMeta) gatekeeper() {
 	msgct := 0
 	for {
@@ -98,16 +101,21 @@ func (mm *messagesMeta) gatekeeper() {
 	}
 }
 
+// This schedules a check of a user / pass combo.
 func (mm *messagesMeta) scheduleCheck(user, pass string) {
 	if mm.startTime.IsZero() {
 		mm.startTime = time.Now()
 	}
+
+	// If buffer is full, block waiting to write.  This is how
+	// we manage number of concurrent workers.
 	mm.semaphore <- struct{}{}
 	go mm.checkPass(user, pass)
 }
 
 func (mm *messagesMeta) checkPass(user, pass string) {
 	defer func() {
+		// Always signal done, regardless of error
 		mm.donechan <- struct{}{}
 	}()
 	if mm.isStopping() {
@@ -128,6 +136,7 @@ func (mm *messagesMeta) checkPass(user, pass string) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 400 {
+		// Success!
 		m := &message{
 			user: user,
 			pass: pass,
